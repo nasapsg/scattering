@@ -2,7 +2,7 @@
 # Mie scattering models
 # Mie code based on Bohren and Huffman IDL implementation
 # Implementation for NASA/PSG
-# 2018-2021, Geronimo Villanueva, NASA-GSFC
+# 2018-2023, Geronimo Villanueva, NASA-GSFC
 # ------------------------------------------------------------
 import os
 import numpy as np
@@ -41,12 +41,14 @@ def calcmie(file,update,source,type,subtype,label,rho,resize,reffs):
         scatt[:,0] = data[:,0]
         for k in range(len(reffs)):
             # Calculate size distribution
-            den = 1.0                # Cell number density [particles/cm3]
-            rm  = reffs[k]/1.50833   # Effective particle radius [um]
             print(reffs[k])
-            r1log=np.log(r1); r2log=np.log(r2); rslog=np.log(rs);
+            den = 1.0                # Cell number density [particles/cm3], N0
+            rslog = np.log(rs)       # Standard deviation of the distribution, sigma = ln(S)
+            rm  = reffs[k]/np.exp(5.0/2.0*rslog*rslog)  # Modal particle radius, rm [um]
+            r1log=np.log(r1); r2log=np.log(r2)
             const=np.sqrt(2.0*np.pi); constx=2.0*np.pi*1e-4; dlog=(r2log-r1log)/(1.00*ndist);
             radr=np.zeros(ndist); sized=np.zeros(ndist); dr=np.zeros(ndist)
+
             for i in range(ndist):
                 rlog=r1log+(i*dlog)
                 radr[i]=np.exp(rlog)
@@ -74,10 +76,8 @@ def calcmie(file,update,source,type,subtype,label,rho,resize,reffs):
             veff=sum2/(sum1*reff*reff)
 
             # Scaling factor for extinction coefficient
-            Area = np.pi*reff*reff*1e-12                    # Area [m2]
-            Vol=(4.0/3.0)*np.pi*reff*reff*reff*1e-18        # Volume [m3]
-            Mass=Vol*rho*1e3                                # Mass of particle [kg]
-            tscl=(Area/Mass)                                # Qext to m2/kg scaler
+            Ve = (4.0/3.0)*np.pi*reff*reff*reff*1e-18       # Volume of effective particle [m3]
+            Me = Ve*rho*1e3                                 # Mass of effective particle [kg]
 
             # Iterate across wavelength
             for i in range(npts):
@@ -91,19 +91,18 @@ def calcmie(file,update,source,type,subtype,label,rho,resize,reffs):
                     x=constx*radr[j]*freq
                     if x>2950: continue
                     s1,s2,qext,qsca,qback,gfac = bhmie(x,refrel,nang)
-                    #qext=1.0; qsca=1.0; qback=1.0; gfac=1.0
                     qabs=qext-qsca
-                    rd2=radr[j]*radr[j]
-                    weight=np.pi*rd2*sized[j]*dr[j]*1e-3
-                    bext = bext + (weight*qext)      # bext [1/km]
-                    babs = babs + (weight*qabs)      # babs [1/km]
-                    bsca = bsca + (weight*qsca)      # bsca [1/km]
-                    back = back + (weight*qback)     # back [1/km]
-                    asym = asym + (weight*qsca*gfac) # asym [1/km]
-                    wsum = wsum + weight
+                    Ar = np.pi*radr[j]*radr[j]
+                    weight = Ar*sized[j]*dr[j]*1e-3
+                    bext = bext + (weight*qext)        # bext
+                    babs = babs + (weight*qabs)        # babs
+                    bsca = bsca + (weight*qsca)        # bsca
+                    back = back + (weight*qback)       # back
+                    asym = asym + (weight*qsca*gfac)   # asym
+                    wsum = wsum + weight/Ar
                 # End size distribution loop
 
-                scatt[i,k*3+1] = (bext/wsum)*tscl      # Extinction cross section [m2/Kg]
+                scatt[i,k*3+1] = (bext/wsum)/Me*1e-12  # Extinction cross section [m2/Kg]
                 scatt[i,k*3+2] = bsca / bext           # Dimensionless [0:no_scattering/only_extinction, 1:full_scattering]
                 scatt[i,k*3+3] = asym / bsca           # Dimensionless [0:isotropic, 1:fully_directed]
             # End wavelength loop
@@ -156,50 +155,41 @@ def calcmie(file,update,source,type,subtype,label,rho,resize,reffs):
 
 
 def bhmie(x,refrel,nang):
-# This file is converted from mie.m, see http://atol.ucsd.edu/scatlib/index.htm
-# Bohren and Huffman originally published the code in their book on light scattering
-
-# Calculation based on Mie scattering theory
-# input:
-#      x      - size parameter = k*radius = 2pi/lambda * radius
-#                   (lambda is the wavelength in the medium around the scatterers)
-#      refrel - refraction index (n in complex form for example:  1.5+0.02*i;
-#      nang   - number of angles for S1 and S2 function in range from 0 to pi/2
-# output:
-#        S1, S2 - funtion which correspond to the (complex) phase functions
-#        Qext   - extinction efficiency
-#        Qsca   - scattering efficiency
-#        Qback  - backscatter efficiency
-#        gsca   - asymmetry parameter
-
+    # This file is converted from mie.m, see http://atol.ucsd.edu/scatlib/index.htm
+    # Bohren and Huffman originally published the code in their book on light scattering
+    # Calculation based on Mie scattering theory
+    # input:
+    #      x      - size parameter = k*radius = 2pi/lambda * radius (lambda is the wavelength in the medium around the scatterers)
+    #      refrel - refraction index (n in complex form for example:  1.5+0.02*i;
+    #      nang   - number of angles for S1 and S2 function in range from 0 to pi/2
+    # output:
+    #      S1, S2 - funtion which correspond to the (complex) phase functions
+    #      Qext   - extinction efficiency
+    #      Qsca   - scattering efficiency
+    #      Qback  - backscatter efficiency
+    #      gsca   - asymmetry parameter
     nmxx=150000
-
     s1_1=np.zeros(nang,dtype=np.complex128)
     s1_2=np.zeros(nang,dtype=np.complex128)
     s2_1=np.zeros(nang,dtype=np.complex128)
     s2_2=np.zeros(nang,dtype=np.complex128)
     pi=np.zeros(nang)
     tau=np.zeros(nang)
-
     if (nang > 1000):
         print ('error: nang > mxnang=1000 in bhmie')
         return
+    #Endif
 
     # Require NANG>1 in order to calculate scattering intensities
-    if (nang < 2):
-        nang = 2
-
+    if (nang < 2): nang = 2
     pii = 4.*np.arctan(1.)
     dx = x
-
     drefrl = refrel
     y = x*drefrl
     ymod = abs(y)
 
-
-    #    Series expansion terminated after NSTOP terms
-    #    Logarithmic derivatives calculated from NMX on down
-
+    #  Series expansion terminated after NSTOP terms
+    #  Logarithmic derivatives calculated from NMX on down
     xstop = x + 4.*x**0.3333 + 2.0
     nmx = max(xstop,ymod) + 15.0
     nmx=np.fix(nmx)
@@ -210,34 +200,28 @@ def bhmie(x,refrel,nang):
     # for a=1.0micron SiC grain.  When NMX increased by 1, only a single
     # computed number changed (out of 4*7001) and it only changed by 1/8387
     # conclusion: we are indeed retaining enough terms in series!
-
     nstop = int(xstop)
-
     if (nmx > nmxx):
         print ( "error: nmx > nmxx=%f for |m|x=%f" % ( nmxx, ymod) )
         return
-
+    #Endif
+    
     dang = .5*pii/ (nang-1)
-
-
     amu=np.arange(0.0,nang,1)
     amu=np.cos(amu*dang)
-
     pi0=np.zeros(nang)
     pi1=np.ones(nang)
 
     # Logarithmic derivative D(J) calculated by downward recurrence
     # beginning with initial value (0.,0.) at J=NMX
-
     nn = int(nmx)-1
     d=np.zeros(nn+1,dtype=np.complex128)
     for n in range(0,nn):
         en = nmx - n
         d[nn-n-1] = (en/y) - (1./ (d[nn-n]+en/y))
 
-    #*** Riccati-Bessel functions with real argument X
-    #    calculated by upward recurrence
-
+    # Riccati-Bessel functions with real argument X
+    # calculated by upward recurrence
     psi0 = np.cos(dx)
     psi1 = np.sin(dx)
     chi0 = -np.sin(dx)
@@ -251,46 +235,44 @@ def bhmie(x,refrel,nang):
         en = n+1.0
         fn = (2.*en+1.)/(en* (en+1.))
 
-    # for given N, PSI  = psi_n        CHI  = chi_n
-    #              PSI1 = psi_{n-1}    CHI1 = chi_{n-1}
-    #              PSI0 = psi_{n-2}    CHI0 = chi_{n-2}
-    # Calculate psi_n and chi_n
+        # for given N, PSI  = psi_n        CHI  = chi_n
+        #              PSI1 = psi_{n-1}    CHI1 = chi_{n-1}
+        #              PSI0 = psi_{n-2}    CHI0 = chi_{n-2}
+        # Calculate psi_n and chi_n
         psi = (2.*en-1.)*psi1/dx - psi0
         chi = (2.*en-1.)*chi1/dx - chi0
         xi = psi-chi*1j
 
-    #*** Store previous values of AN and BN for use
-    #    in computation of g=<cos(theta)>
+        # Store previous values of AN and BN for use
+        # in computation of g=<cos(theta)>
         if (n > 0):
             an1 = an
             bn1 = bn
+        # Endif
 
-    #*** Compute AN and BN:
+        # Compute AN and BN:
         an = (d[n]/drefrl+en/dx)*psi - psi1
         an = an/ ((d[n]/drefrl+en/dx)*xi-xi1)
         bn = (drefrl*d[n]+en/dx)*psi - psi1
         bn = bn/ ((drefrl*d[n]+en/dx)*xi-xi1)
 
-    #*** Augment sums for Qsca and g=<cos(theta)>
+        # Augment sums for Qsca and g=<cos(theta)>
         qsca += (2.*en+1.)* (abs(an)**2+abs(bn)**2)
         gsca += ((2.*en+1.)/ (en* (en+1.)))*( np.real(an)* np.real(bn)+np.imag(an)*np.imag(bn))
+        if (n > 0): gsca += ((en-1.)* (en+1.)/en)*( np.real(an1)* np.real(an)+np.imag(an1)*np.imag(an)+np.real(bn1)* np.real(bn)+np.imag(bn1)*np.imag(bn))
 
-        if (n > 0):
-            gsca += ((en-1.)* (en+1.)/en)*( np.real(an1)* np.real(an)+np.imag(an1)*np.imag(an)+np.real(bn1)* np.real(bn)+np.imag(bn1)*np.imag(bn))
-
-
-    #*** Now calculate scattering intensity pattern
-    #    First do angles from 0 to 90
+        # Now calculate scattering intensity pattern
+        # First do angles from 0 to 90
         pi=0+pi1    # 0+pi1 because we want a hard copy of the values
         tau=en*amu*pi-(en+1.)*pi0
         s1_1 += fn* (an*pi+bn*tau)
         s2_1 += fn* (an*tau+bn*pi)
 
-    #*** Now do angles greater than 90 using PI and TAU from
-    #    angles less than 90.
-    #    P=1 for N=1,3,...% P=-1 for N=2,4,...
-    #   remember that we have to reverse the order of the elements
-    #   of the second part of s1 and s2 after the calculation
+        # Now do angles greater than 90 using PI and TAU from
+        # angles less than 90.
+        # P=1 for N=1,3,...% P=-1 for N=2,4,...
+        # remember that we have to reverse the order of the elements
+        # of the second part of s1 and s2 after the calculation
         p = -p
         s1_2+= fn*p* (an*pi-bn*tau)
         s2_2+= fn*p* (bn*pi-an*tau)
@@ -301,16 +283,17 @@ def bhmie(x,refrel,nang):
         chi1 = chi
         xi1 = psi1-chi1*1j
 
-    #*** Compute pi_n for next value of n
-    #    For each angle J, compute pi_n+1
-    #    from PI = pi_n , PI0 = pi_n-1
+        # Compute pi_n for next value of n
+        # For each angle J, compute pi_n+1
+        # from PI = pi_n , PI0 = pi_n-1
         pi1 = ((2.*en+1.)*amu*pi- (en+1.)*pi0)/ en
         pi0 = 0+pi   # 0+pi because we want a hard copy of the values
 
-    #*** Have summed sufficient terms.
-    #    Now compute QSCA,QEXT,QBACK,and GSCA
+        # Have summed sufficient terms.
+        # Now compute QSCA,QEXT,QBACK,and GSCA
+    #Endfor
 
-    #   we have to reverse the order of the elements of the second part of s1 and s2
+    # We have to reverse the order of the elements of the second part of s1 and s2
     s1=np.concatenate((s1_1,s1_2[-2::-1]))
     s2=np.concatenate((s2_1,s2_2[-2::-1]))
     gsca = 2.*gsca/qsca
@@ -321,7 +304,7 @@ def bhmie(x,refrel,nang):
     # so that the backscattering cross section really
     # has dimension of length squared
     qback = 4*(abs(s1[2*nang-2])/dx)**2
-    #qback = ((abs(s1[2*nang-2])/dx)**2 )/pii  #old form
 
+    # Return values
     return s1,s2,qext,qsca,qback,gsca
 #Enddef bhmie

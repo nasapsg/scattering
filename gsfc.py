@@ -2,7 +2,7 @@ import os
 import mie
 
 source = 'GSFC'
-update = 0
+update = 1
 
 # List of models to run
 reffs = [0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0, 50.0, 100.0] # Particle sizes [um]
